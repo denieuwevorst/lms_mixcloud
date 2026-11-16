@@ -56,6 +56,25 @@ BEGIN {
 	package Slim::Utils::Errno;
 	$INC{'Slim/Utils/Errno.pm'} = __FILE__;
 
+	package Slim::Utils::PluginManager;
+	our $enabled = 1;
+	sub isEnabled { $enabled }
+	$INC{'Slim/Utils/PluginManager.pm'} = __FILE__;
+
+	package Slim::Utils::Favorites;
+	our (@saved, $failure, $save_calls);
+	sub new { bless {}, shift }
+	sub findUrl { @saved ? 0 : undef }
+	sub add {
+		die "Save threw an exception\n" if ($failure || '') eq 'exception';
+		return undef if ($failure || '') eq 'no-index';
+		push @saved, [ @_[1..$#_] ];
+		return 0;
+	}
+	sub error { ($failure || '') eq 'saveerror' ? 'saveerror' : undef }
+	sub save { $save_calls++; $failure = undef }
+	$INC{'Slim/Utils/Favorites.pm'} = __FILE__;
+
 	package Slim::Player::ProtocolHandlers;
 	our %handlers;
 	sub registerURLHandler {}
@@ -133,12 +152,90 @@ subtest 'native favourite context and restart-safe routing' => sub {
 	is($users->[0]->{image}, 'https://example.test/avatar.jpg', 'native favourite action has artwork');
 	is($users->[0]->{url}, \&Plugins::MixCloud::Plugin::tracksHandler, 'normal user browsing unchanged');
 	is($users->[0]->{passthrough}->[0]->{parser}, \&Plugins::MixCloud::Plugin::_parseUser, 'normal user submenu retained');
+	is_deeply($users->[0]->{itemActions}->{info}, {
+		command => ['mixcloud', 'items'],
+		fixedParams => { mixcloud_user => 'Test-User' },
+	}, 'user row explicitly exposes Material Skin more action');
 
 	%Slim::Player::ProtocolHandlers::handlers = ();
 	$plugin->initPlugin;
 	is($Slim::Player::ProtocolHandlers::handlers{mixclouduser}, $handler, 'feed handler registered on startup');
 	ok($handler->isPlaylistURL($users->[0]->{favorites_url}), 'saved user recognized as playlist');
 	ok(!$handler->isPlaylistURL('mixcloud://test-user/mix-1/'), 'individual track remains a track');
+};
+
+subtest 'Material Skin more action returns explicit favourite entry' => sub {
+	my $users = [];
+	my $user = {
+		key => '/test-user/', username => 'test-user', name => 'Test User',
+		is_current_user => JSON::XS::false, following_count => 0, favorite_count => 0, cloudcast_count => 0,
+		pictures => { large => 'https://example.test/avatar.jpg' },
+	};
+	Plugins::MixCloud::Plugin::_parseUsers(undef, { data => [$user] }, $users);
+	my $action = $users->[0]->{itemActions}->{info};
+	@Slim::Networking::SimpleAsyncHTTP::responses = ($user);
+	my $feed;
+	Plugins::MixCloud::Plugin::toplevel(undef, sub { $feed = shift }, {
+		params => $action->{fixedParams},
+	});
+	is($feed->{query}->{mixcloud_user}, 'test-user', 'user identity preserved for subsequent menu commands');
+	is($feed->{items}->[0]->{name}, 'PLUGIN_MIXCLOUD_ADD_USER_FAVOURITE', 'empty user still has an explicit favourite action');
+	my $entry = $feed->{items}->[0];
+	is($entry->{url}, \&Plugins::MixCloud::Plugin::addUserFavourite, 'entry is actionable, not favourite metadata');
+	is($entry->{type}, 'link', 'entry is browsable on controllers without native favourites support');
+	@Slim::Utils::Favorites::saved = ();
+	my $result;
+	$entry->{url}->(undef, sub { $result = shift }, {}, @{$entry->{passthrough}});
+	is($result->[0]->{name}, 'PLUGIN_MIXCLOUD_USER_FAVOURITE_ADDED', 'explicit action confirms successful save');
+	is_deeply($Slim::Utils::Favorites::saved[0], [
+		'mixclouduser://test-user/', 'Test User', 'link', undef, undef, 'https://example.test/avatar.jpg',
+	], 'saves durable browsable feed with display name and artwork');
+	$entry->{url}->(undef, sub { $result = shift }, {}, @{$entry->{passthrough}});
+	is($result->[0]->{name}, 'PLUGIN_MIXCLOUD_USER_FAVOURITE_EXISTS', 'second click explains duplicate');
+	is(scalar @Slim::Utils::Favorites::saved, 1, 'favourite at index zero is not duplicated');
+
+	my $menu = [];
+	Plugins::MixCloud::Plugin::_parseUser(undef, {
+		%$user, following_count => 1, favorite_count => 2, cloudcast_count => 3,
+	}, $menu);
+	is_deeply([map { $_->{name} } @$menu], [
+		'PLUGIN_MIXCLOUD_FOLLOWING', 'PLUGIN_MIXCLOUD_FAVORITES',
+		'PLUGIN_MIXCLOUD_CLOUDCASTS', 'PLUGIN_MIXCLOUD_ADD_USER_FAVOURITE',
+	], 'ordinary user submenu retains existing entries and adds explicit action');
+};
+
+subtest 'explicit save reports disabled plugin and persistence failures' => sub {
+	my $user = { key => '/test-user/', name => 'Test User' };
+	for my $failure ('saveerror', 'no-index', 'exception') {
+		local $Slim::Utils::Favorites::failure = $failure;
+		local @Slim::Utils::Favorites::saved = ();
+		my $result;
+		Plugins::MixCloud::Plugin::addUserFavourite(undef, sub { $result = shift }, {}, $user);
+		is($result->[0]->{name}, 'PLUGIN_MIXCLOUD_USER_FAVOURITE_FAILED', "$failure is not reported as success");
+	}
+	{
+		local $Slim::Utils::Favorites::failure = 'saveerror';
+		local @Slim::Utils::Favorites::saved = (['mixclouduser://test-user/']);
+		local $Slim::Utils::Favorites::save_calls = 0;
+		my $result;
+		Plugins::MixCloud::Plugin::addUserFavourite(undef, sub { $result = shift }, {}, $user);
+		is($Slim::Utils::Favorites::save_calls, 1, 'entry left in memory by failed save is retried');
+		is($result->[0]->{name}, 'PLUGIN_MIXCLOUD_USER_FAVOURITE_ADDED', 'retry only confirms success after store error clears');
+		is(scalar @Slim::Utils::Favorites::saved, 1, 'retry does not duplicate in-memory entry');
+	}
+	{
+		local $Slim::Utils::PluginManager::enabled = 0;
+		local @Slim::Utils::Favorites::saved = ();
+		my $result;
+		Plugins::MixCloud::Plugin::addUserFavourite(undef, sub { $result = shift }, {}, $user);
+		is($result->[0]->{name}, 'PLUGIN_MIXCLOUD_USER_FAVOURITE_FAILED', 'disabled favourites reports failure');
+		is(scalar @Slim::Utils::Favorites::saved, 0, 'disabled favourites never attempts save');
+	}
+	my $result;
+	Plugins::MixCloud::Plugin::toplevel(undef, sub { $result = shift }, {
+		params => { mixcloud_user => 'invalid/user' },
+	});
+	is($result->[0]->{type}, 'text', 'invalid explicit menu route fails visibly');
 };
 
 subtest 'latest 100 uploads across API pages' => sub {

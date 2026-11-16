@@ -27,6 +27,8 @@ use HTTP::Request;
 use Slim::Utils::Strings qw(string cstring);
 use Slim::Utils::Prefs;
 use Slim::Utils::Log;
+use Slim::Utils::Favorites;
+use Slim::Utils::PluginManager;
 use Slim::Plugin::OPMLBased;
 
 use Plugins::MixCloud::ProtocolHandler;
@@ -427,6 +429,12 @@ sub _parseUsers {
 			cover => $icon,
 			favorites_url => 'mixclouduser://' . lc($username) . '/',
 			favorites_type => 'link',
+			itemActions => {
+				info => {
+					command => [ 'mixcloud', 'items' ],
+					fixedParams => { mixcloud_user => $username },
+				},
+			},
 			passthrough => [ { type=>'user', params => $key, parser=>\&_parseUser} ]
 		};
 	}
@@ -437,7 +445,7 @@ sub _parseUser {
 	$log->debug('_parseUser started');
 	my ($client, $json, $menu) = @_;
 	my $key = substr($json->{'key'},1);
-	my $isCurrentUser = ($json->{'is_current_user'} ne '');
+	my $isCurrentUser = $json->{'is_current_user'};
 
 	if ($json->{'following_count'} > 0) {
 		push(@$menu, 
@@ -459,7 +467,55 @@ sub _parseUser {
 				url  => \&tracksHandler, passthrough => [ { total => $json->{'cloudcast_count'},type => 'cloudcasts',params => $key."cloudcasts"} ] }
 		);
 	}
+
+	if (!$isCurrentUser) {
+		push @$menu, {
+			name => string('PLUGIN_MIXCLOUD_ADD_USER_FAVOURITE'),
+			type => 'link',
+			url => \&addUserFavourite,
+			passthrough => [ {
+				key => $json->{key},
+				name => $json->{name},
+				icon => $json->{pictures}->{large} || $json->{pictures}->{medium},
+			} ],
+		};
+	}
 	$log->debug('_parseUser ended');
+}
+
+sub addUserFavourite {
+	my ($client, $callback, $args, $user) = @_;
+	my ($username) = ($user->{key} || '') =~ m{^/([A-Za-z0-9_-]+)/$};
+	my $message = 'PLUGIN_MIXCLOUD_USER_FAVOURITE_FAILED';
+
+	if (!$username || !Slim::Utils::PluginManager->isEnabled('Slim::Plugin::Favorites::Plugin')) {
+		$log->error('Cannot save Mixcloud user favourite: invalid user or Favourites plugin disabled');
+	} else {
+		my $url = 'mixclouduser://' . lc($username) . '/';
+		my $saved = eval {
+			my $favourites = Slim::Utils::Favorites->new($client);
+			my $index = $favourites->findUrl($url);
+			if (defined $index && !$favourites->error) {
+				$message = 'PLUGIN_MIXCLOUD_USER_FAVOURITE_EXISTS';
+			} else {
+				if (defined $index) {
+					# A failed disk write can leave the entry only in Lyrion's in-memory store.
+					$favourites->save;
+				} else {
+					$index = $favourites->add($url, $user->{name} || $username, 'link', undef, undef, $user->{icon});
+				}
+				if (defined $index && !$favourites->error) {
+					$message = 'PLUGIN_MIXCLOUD_USER_FAVOURITE_ADDED';
+				} else {
+					$log->error('Cannot save Mixcloud user favourite: ' . ($favourites->error || 'no favourite index returned'));
+				}
+			}
+			1;
+		};
+		$log->error("Cannot save Mixcloud user favourite: $@") if !$saved;
+	}
+
+	$callback->([ { name => string($message), type => 'text' } ]);
 }
 
 sub _tagHandler {
@@ -560,6 +616,21 @@ sub playerMenu { shift->can('nonSNApps') ? undef : 'RADIO' }
 sub toplevel {
 	$log->debug('toplevel started');
 	my ($client, $callback, $args) = @_;
+
+	# Material Skin requests a row's explicit "more" action separately from normal browsing.
+	if (defined (my $username = $args->{params}->{mixcloud_user})) {
+		if ($username !~ /^[A-Za-z0-9_-]+$/) {
+			$log->error('Invalid Mixcloud user menu request');
+			$callback->([ { name => string('PLUGIN_MIXCLOUD_FEED_FAILED'), type => 'text' } ]);
+			return;
+		}
+		getToken(sub {
+			tracksHandler($client, sub {
+				$callback->({ items => $_[0], query => { mixcloud_user => $username } });
+			}, $args, { type => 'user', params => "$username/", parser => \&_parseUser });
+		});
+		return;
+	}
 
 	my $callbacks = [
 		

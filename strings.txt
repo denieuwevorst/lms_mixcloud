@@ -69,6 +69,18 @@ PLUGIN_MIXCLOUD_STREAM_FAILED
 
 PLUGIN_MIXCLOUD_FEED_FAILED
 	EN	Unable to load Mixcloud uploads. Please try again.
+
+PLUGIN_MIXCLOUD_ADD_USER_FAVOURITE
+	EN	Add to Favourites
+
+PLUGIN_MIXCLOUD_USER_FAVOURITE_ADDED
+	EN	Mixcloud user added to Lyrion Favourites.
+
+PLUGIN_MIXCLOUD_USER_FAVOURITE_EXISTS
+	EN	This Mixcloud user is already in Lyrion Favourites.
+
+PLUGIN_MIXCLOUD_USER_FAVOURITE_FAILED
+	EN	Unable to save this Mixcloud user. Check that Lyrion Favourites is enabled and writable, then try again.
 	
 PLUGIN_MIXCLOUD_USER
 	EN	User

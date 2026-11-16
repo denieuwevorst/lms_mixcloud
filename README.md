@@ -24,10 +24,13 @@ Windows, and MacOS.
 ## Favourite Mixcloud users ##
 
 In **My Mixcloud > Following**, open a user's three-dot menu and select
-**Add to Favourites** (the wording depends on your LMS controller). This uses
-Lyrion's own favourites, not Mixcloud's track favourites. An already-saved user
-offers **Remove from Favourites** instead, so the same user is not added twice.
-Lyrion supplies the normal save/remove feedback.
+**Add to Favourites**. This is an explicit plugin submenu entry, including in
+Material Skin, rather than relying on the controller to discover a native
+favourite action. It is also available when opening the user's submenu normally.
+This uses Lyrion's own favourites, not Mixcloud's track favourites. The result
+reports success, an already-saved user, or a save failure; selecting it again
+does not add a duplicate. Remove a saved user from Lyrion's **Favourites** menu.
+Some controllers additionally expose their native Add/Remove favourite action.
 
 Open the saved user from Lyrion's **Favourites** to browse their latest 100 uploads,
 newest first, or all uploads if they have fewer. Select an individual upload to
@@ -56,6 +59,9 @@ fork's changes. On a working Mixcloud installation:
 3. Restart LMS, confirm Mixcloud is enabled and connected to your account, then
    add a user through **My Mixcloud > Following**.
 
+After updating an earlier version of this branch, reopen the Mixcloud menu (and
+reload Material Skin in the browser) so an old cached user submenu is not reused.
+
 An upstream plugin update can overwrite manually installed changes. Authentication
 requires LMS 9.2.0 builds after 18 June 2026, as noted in the plugin's startup
 warning. Existing playback requirements below are unchanged.
@@ -67,7 +73,8 @@ Run `prove -v t/user-favourites.t` with Perl and the plugin's non-LMS dependenci
 `HTML::Parser`, and `XML::Simple`) available. The tests load and execute both real
 plugin modules, including track parsing, with LMS services and HTTP responses
 doubled. They cover favourite metadata, startup routing, the 100-upload bound,
-pagination, filtering, authentication, metadata callbacks, and visible failures.
+pagination, filtering, authentication, metadata callbacks, the explicit Material
+Skin menu route, duplicate saves, and visible persistence failures.
 They do not replace testing the three-dot menu, favourite persistence across an
 LMS restart, and actual audio playback on a running LMS installation.
 
