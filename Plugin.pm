@@ -97,7 +97,7 @@ sub getToken {
 sub _provider {
 	$log->debug('_provider started');
 	my ($client, $url, $args) = @_;
-	return Plugins::MixCloud::ProtocolHandler::getMetadataFor($client, $url, $args);
+	return Plugins::MixCloud::ProtocolHandler->getMetadataFor($client, $url, $args);
 }
 
 sub _parseTracks {
@@ -199,7 +199,7 @@ sub tracksHandler {
 		
 sub _getTracks {
 	$log->debug('_getTracks started');
-	my ($client, $searchType, $index, $quantity, $queryUrl, $cursor, $parser, $callback, $menu, $total) = @_;
+	my ($client, $searchType, $index, $quantity, $queryUrl, $cursor, $parser, $callback, $menu, $total, $remaining, $seen) = @_;
 	
 	my $request = HTTP::Request->new( 'GET' => $queryUrl );
 	$request->protocol('HTTP/1.1');	# Force request because, since May 2026, seen destination rejecting HTTP/1.0 which is LMS default
@@ -214,7 +214,31 @@ sub _getTracks {
 		sub {
 			my $http = shift;				
 			my $json = eval { decode_json($http->content) };
-			$log->warn($@) if $@;
+			if ($@ || ref $json ne 'HASH' || (defined $remaining && ref $json->{data} ne 'ARRAY')) {
+				$log->error('Invalid Mixcloud API response: ' . ($@ || 'unexpected response structure'));
+				$callback->([ { name => string('PLUGIN_MIXCLOUD_FEED_FAILED'), type => 'text' } ]);
+				return;
+			}
+
+			# Count uploads, not visible tracks: exclusive uploads still belong to the latest 100.
+			if (defined $remaining) {
+				my $count = min(scalar @{$json->{data}}, $remaining);
+				splice @{$json->{data}}, $count;
+				$parser->($client, $json, $menu, $searchType);
+				$remaining -= $count;
+				my $next = $json->{paging}->{next};
+				if ($remaining > 0 && $next) {
+					if (!$count || $next !~ m{^https://api\.mixcloud\.com/} || $seen->{$next}++) {
+						$log->error('Invalid or repeated Mixcloud pagination page');
+						$callback->([ { name => string('PLUGIN_MIXCLOUD_FEED_FAILED'), type => 'text' } ]);
+						return;
+					}
+					_getTracks($client, $searchType, $index, $quantity, $next, 0, $parser, $callback, $menu, $total, $remaining, $seen);
+				} else {
+					_callbackTracks($menu, $index, $quantity, $callback);
+				}
+				return;
+			}
 			
 			my $nextPage = $json->{'paging'}->{'next'} || '';
 			$log->debug('_getTracks next page: ' . $nextPage);
@@ -401,6 +425,8 @@ sub _parseUsers {
 			icon => $icon,
 			image => $icon,
 			cover => $icon,
+			favorites_url => 'mixclouduser://' . lc($username) . '/',
+			favorites_type => 'link',
 			passthrough => [ { type=>'user', params => $key, parser=>\&_parseUser} ]
 		};
 	}
@@ -452,6 +478,28 @@ sub _tagHandler {
 	$log->debug('_tagHandler ended');
 }
 
+sub userUploadsFeed {
+	my ($client, $url, $callback) = @_;
+	my ($username) = $url =~ m{^mixclouduser://([A-Za-z0-9_-]+)/$};
+	if (!$username) {
+		$log->error('Invalid Mixcloud user favourite URL');
+		$callback->({ items => [ { name => string('PLUGIN_MIXCLOUD_FEED_FAILED'), type => 'text' } ] });
+		return;
+	}
+
+	getToken(sub {
+		my $queryUrl = "https://api.mixcloud.com/$username/cloudcasts/?limit=100";
+		$queryUrl .= '&access_token=' . uri_escape($token) if $token ne '';
+		_getTracks($client, 'cloudcasts', 0, 100, $queryUrl, 0, \&_parseTracks, sub {
+			my $feed = shift;
+			$feed = { items => $feed } if ref $feed eq 'ARRAY';
+			$feed->{title} = $username;
+			$feed->{type} = 'opml';
+			$callback->($feed);
+		}, [], '', 100, { $queryUrl => 1 });
+	});
+}
+
 sub initPlugin {
 	$log->debug('initPlugin started');
 	my $class = shift;
@@ -484,6 +532,9 @@ sub initPlugin {
 
 	Slim::Player::ProtocolHandlers->registerHandler(
 		mixcloud => 'Plugins::MixCloud::ProtocolHandler'
+	);
+	Slim::Player::ProtocolHandlers->registerHandler(
+		mixclouduser => 'Plugins::MixCloud::ProtocolHandler'
 	);
 
 	# Warn about possible incompatible version if LMS < 9.2.0

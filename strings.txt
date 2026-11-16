@@ -66,6 +66,9 @@ PLUGIN_MIXCLOUD_USEBUFFERED_DESC
 	
 PLUGIN_MIXCLOUD_STREAM_FAILED
 	EN	Connection error
+
+PLUGIN_MIXCLOUD_FEED_FAILED
+	EN	Unable to load Mixcloud uploads. Please try again.
 	
 PLUGIN_MIXCLOUD_USER
 	EN	User

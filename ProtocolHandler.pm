@@ -44,7 +44,7 @@ my $cache = Slim::Utils::Cache->new;
 
 Slim::Player::ProtocolHandlers->registerURLHandler(PAGE_URL_REGEXP, __PACKAGE__);
 
-sub isPlaylistURL { 0 }
+sub isPlaylistURL { $_[1] =~ m{^mixclouduser://} ? 1 : 0 }
 
 sub canDirectStream { 
 	return 0 if $prefs->get('useBuffered') && !Slim::Player::Protocols::HTTP->can('response');
@@ -130,7 +130,10 @@ sub explodePlaylist {
 	$log->debug('explodePlaylist started');
 	my ( $class, $client, $uri, $callback ) = @_;
 
-	if ( $uri =~ PAGE_URL_REGEXP ) {
+	if ( $uri =~ m{^mixclouduser://} ) {
+		Plugins::MixCloud::Plugin::userUploadsFeed($client, $uri, $callback);
+	}
+	elsif ( $uri =~ PAGE_URL_REGEXP ) {
 		Plugins::MixCloud::Plugin::urlHandler(
 			$client,
 			sub { $callback->([map {$_->{'play'}} @{$_[0]->{'items'}}]) },
@@ -269,6 +272,9 @@ sub _fetchTrackExtra {
 sub getMetadataFor {
 	$log->debug('getMetadataFor started');
 	my ($class, $client, $url, $args) = @_;
+
+	# User favourites are feeds, not tracks which need a metadata API request.
+	return { icon => $class->getIcon } if $class->isPlaylistURL($url);
 	
 	my $id = getId($url);
 	my $item = $cache->get("mixcloud_item_$id");
